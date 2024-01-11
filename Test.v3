@@ -14,8 +14,6 @@ def X = [
 //========================================================================
 
 def test_parsing(t: Tester) {
-	// Expected to return error when parsing
-	// def jsonString = "[{\"a\": -193.4e+3, \"b\": [true]}]";
 	def jsonString = "[{\"a\": -193.4, \"b\": 145}]";
 	match (Json.valueParser.run(jsonString)) {
 		Result(target, index, result) => {
@@ -28,8 +26,6 @@ def test_parsing(t: Tester) {
 }
 
 def test_deserializing(t: Tester) {
-	// Expected to return error when parsing
-	// def jsonString = "[{\"a\": -193.4e+3, \"b\": [true]}]";
 	def jsonString = "[{\"a\": -193.4, \"b\": 145}]";
 	def deserializer = Json.deArray(
 		Json.deObject2(
