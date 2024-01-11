@@ -38,12 +38,8 @@ def test_deserializing(t: Tester) {
 			def json = Json.parseValueResultToJsonValue(result);
 			def arr = deserializer(json);
 
-			System.puts("parsing success:\n");
-			System.puts(json.toString());
-			System.puts("\n");
-
 			match (arr) {
-				Ok(arr) => {}
+				Ok => {}
 				Err(err) => t.fail(err);
 			}
 		}
@@ -67,13 +63,9 @@ def test_fail_deserializing(t: Tester) {
 			def json = Json.parseValueResultToJsonValue(result);
 			def arr = deserializer(json);
 
-			System.puts("parsing success:\n");
-			System.puts(json.toString());
-			System.puts("\n");
-
 			match (arr) {
-				Ok(arr) => {}
-				Err(err) => t.fail(err);
+				Ok => t.fail("Should have failed with error that Expected to find Number but found Array");
+				Err => {}
 			}
 		}
 		Error(target_, index_, result_, error) => {
