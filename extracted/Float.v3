@@ -1,0 +1,79 @@
+// Copyright 2020 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// From aeneas/src/types/Float.v3
+
+component Float {
+	def FLOAT32_FRACTION_WIDTH = 23;
+	def FLOAT64_FRACTION_WIDTH = 52;
+	def F32_ZERO = Float32Val.new(0);
+	def F64_ZERO = Float64Val.new(0);
+	def F32_MINUS_ZERO = Float32Val.new(0x80000000u);
+	def F64_MINUS_ZERO = Float64Val.new(0x8000000000000000ul);
+	def F32_MINUS_INFINITY = Float32Val.new(0xff800000u);
+	def F64_MINUS_INFINITY = Float64Val.new(0xfff0000000000000ul);
+	def F32_INFINITY = Float32Val.new(0x7f800000u);
+	def F64_INFINITY = Float64Val.new(0x7ff0000000000000ul);
+
+	def f32(sign: int, exp: int, mantissa: u32) -> Float32Val {
+		var bits = if(sign != 0, 0x80000000u);
+		if (exp < -150) return Float32Val.new(bits);
+		if (exp <= -127) {
+			// subnormal; make implicit 1 explicit and shift right
+			mantissa = 0x80000000u | mantissa >> 1;
+			var shift = -127 - exp;
+			mantissa = (u32.view(roundOff(mantissa, 9 + shift)) << 9) + (mantissa >> u5.view(shift));
+			exp = -127;
+		} else if (exp >= 128) {
+			// saturate large exponents to infinity
+			return if (sign != 0, Float.F32_MINUS_INFINITY, Float.F32_INFINITY);
+		}
+		bits |= (u32.view(u8.view(exp + 127)) << 23);
+		bits |= mantissa >> 9;
+		return Float32Val.new(bits);
+	}
+	def f64(sign: int, exp: int, mantissa: u64) -> Float64Val {
+		var bits = if(sign != 0, 0x8000000000000000ul);
+		if (exp < -1076) return Float64Val.new(bits);
+		if (exp <= -1023) {
+			// subnormal; make implicit 1 explicit and shift right
+			mantissa = 0x8000000000000000ul | mantissa >> 1;
+			var shift = -1023 - exp;
+			mantissa = (u64.view(roundOff(mantissa, 12 + shift)) << 12) + (mantissa >> u6.view(shift));
+			exp = -1023;
+		} else if (exp >= 1024) {
+			// saturate large exponents to infinity
+			return if (sign != 0, F64_MINUS_INFINITY, F64_INFINITY);
+		}
+		bits |= (u64.view(u11.view(exp + 1023)) << 52);
+		bits |= mantissa >> 12;
+		return Float64Val.new(bits);
+	}
+	def roundOff(val: u64, bits: int) -> u1 {
+		var b = val << u6.view(64 - bits);
+		var max = 0x8000000000000000uL;
+		if (b < max) return 0;
+		if (b > max) return 1;
+		if ((val << u6.view(63 - bits)) >= max) return 1;
+		return 0;
+	}
+	def isNan32(bits: u32) -> bool {
+		return (bits & 0x7f800000u) == 0x7f800000u && (bits & 0x7FFFFFu) != 0;
+	}
+	def isNan64(bits: u64) -> bool {
+		return (bits & 0x7ff0000000000000u) == 0x7ff0000000000000u && (bits & 0xFFFFFFFFFFFFFu) != 0;
+	}
+}
+
+class Float32Val(bits: u32) extends Val {
+	def equals(that: Val) -> bool {
+		if (Float.isNan32(bits)) return false;
+		return Float32Val.?(that) && Float32Val.!(that).bits == bits;
+	}
+}
+class Float64Val(bits: u64) extends Val {
+	def equals(that: Val) -> bool {
+		if (Float.isNan64(bits)) return false;
+		return Float64Val.?(that) && Float64Val.!(that).bits == bits;
+	}
+}

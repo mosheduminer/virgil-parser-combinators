@@ -1,0 +1,28 @@
+// Copyright 2011 Google Inc. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// From aeneas/src/core/Value.v3
+
+class Val {
+	def equals(val: Val) -> bool { return this == val; }
+	def hash() -> int { return 0; }
+}
+class Box<T>(val: T) extends Val {
+	def equals(other: Val) -> bool {
+		if (other == this) return true;
+		if (other == null) {
+			var none: T;
+			return this.val == none;
+		}
+		return Box<T>.?(other) && this.val == Box<T>.!(other).val;
+	}
+	def hash() -> int {
+		if (Box<int>.?(this)) return Box<int>.!(this).val;
+		if (Box<bool>.?(this)) return if(Box<bool>.!(this).val, 111111);
+		if (Box<long>.?(this)) {
+			var v = Box<long>.!(this).val;
+			return int.view(v ^ v >> 32);
+		}
+		return 0;
+	}
+}

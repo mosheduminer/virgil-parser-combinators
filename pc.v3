@@ -1,0 +1,445 @@
+type ParseResult {
+	case Empty;
+	case Single(result: string);
+	case Many(results: Array<ParseResult>);
+}
+
+type ParserState {
+	case Result(target: string, index: int, result: ParseResult);
+	case Error(target: string, index: int, result: ParseResult, error: string);
+}
+
+component PCUtils {
+	def parserState(state: ParserState, index: int, result: ParseResult) -> ParserState {
+		match (state) {
+			Result(target, index_, result_) => return ParserState.Result(target, index, result);
+			Error(target, index_, result_, error) => return ParserState.Error(target, index, result, error);
+		}
+	}
+
+	def updateParserResult(state: ParserState, result: ParseResult) -> ParserState {
+		match (state) {
+			Result(target, index, result_) => return ParserState.Result(target, index, result);
+			Error(target, index, result_, error) => return ParserState.Error(target, index, result, error);
+		}
+	}
+
+	def parserError(state: ParserState, error: string) -> ParserState {
+		match (state) {
+			Result(target, index, result) => return ParserState.Error(target, index, result, error);
+			Error(target, index, result, error_) => return ParserState.Error(target, index, result, error);
+		}
+	}
+
+	def stringStartsWith(str: string, start: string, start_index: int) -> bool {
+		if (str.length - start_index < start.length) return false;
+		for (i < start.length) if (str[i + start_index] != start[i]) return false;
+		return true;
+	}
+
+	def intMin(first: int, second: int) -> int {
+		if (second < first) return second;
+		return first;
+	}
+
+	def arraySlice<T>(str: Array<T>, start_index: int, end_index: int) -> Array<T> {
+		def length = intMin(end_index - start_index, str.length - start_index);
+		def dst = Array<T>.new(length);
+		for (i < dst.length) {
+			dst[i] = str[i + start_index];
+		}
+		return dst;
+	}
+
+	def takeInRange(str: string, lower: int, upper: int, start_index: int) -> string {
+		var length = 0;
+		for (i = start_index; i < str.length; i++) {
+			def character = str[i];
+			if (character < lower || character > upper) {
+				break;
+			}
+			length += 1;
+		}
+		return arraySlice(str, start_index, start_index + length);
+	}
+
+
+	def takeDigits(str: string, start_index: int) -> string {
+		return takeInRange(str, 48, 57, start_index);
+	}
+
+	def flattenParseResultToStringImpl(parse_result: ParseResult) -> string {
+		def state = Vector<string>.new();
+		var length = 0;
+		match (parse_result) {
+			Empty => return "";
+			Single(result) => {
+				length += result.length;
+				state.put(result);
+			}
+			Many(results) => {
+				for (result in results) {
+					def ret = flattenParseResultToStringImpl(result);
+					length += ret.length;
+					state.put(ret);
+				}
+			}
+		}
+
+		def ret = Array<byte>.new(length);
+		var index = 0;
+		for (fragment in state.extract()) {
+			Arrays.copyInto(fragment, ret, index);
+			index += fragment.length;
+		}
+		return ret;
+	}
+
+	def flattenParseResultToString(parse_result: ParseResult) -> ParseResult {
+		def result = flattenParseResultToStringImpl(parse_result);
+		if (result.length == 0) {
+			return ParseResult.Empty;
+		}
+		return ParseResult.Single(result);
+	}
+
+	def flattenParseResultsOnce(parse_result: ParseResult) -> ParseResult {
+		match (parse_result) {
+			Many(results) => {
+				def ret = Vector<ParseResult>.new();
+				for (result in results) {
+					match (result) {
+						Many(results) => {
+							for (result in results) {
+								ret.put(result);
+							}
+						}
+						_ => ret.put(result);
+					}
+				}
+				return ParseResult.Many(ret.extract());
+			}
+			_ => return parse_result;
+		}
+	}
+
+	def throwawayParseResult(parse_result: ParseResult) -> ParseResult {
+		return ParseResult.Empty;
+	}
+
+	def removeEmptyParseResults(parse_result: ParseResult) -> ParseResult {
+		match (parse_result) {
+			Many(results) => {
+				def ret = Vector<ParseResult>.new();
+				for (result in results) {
+					match (result) {
+						Empty => {}
+						_ => ret.put(result);
+					}
+				}
+				def r = ParseResult.Many(ret.extract());
+				return r;
+			}
+			_ => return parse_result;
+		}
+	}
+}
+
+class Parser {
+	def parser: ParserState -> ParserState;
+	
+	new(parser) {}
+	
+	def run(target: string) -> ParserState {
+		return parser(ParserState.Result(target, 0, ParseResult.Empty));
+	}
+
+	def mapImpl(
+		parser: ParserState -> ParserState,
+		fn: ParseResult -> ParseResult,
+		state: ParserState
+	) -> ParserState {
+		def nextState = parser(state);
+
+		match (nextState) {
+			Result(target_, index_, result) => return PCUtils.updateParserResult(nextState, fn(result));
+			Error => return nextState;
+		}
+	}
+
+	def map(fn: ParseResult -> ParseResult) -> Parser {
+		return Parser.new(mapImpl(parser, fn, _));
+	}
+
+	def errorMapImpl(
+		parser: ParserState -> ParserState,
+		fn: (string, int) -> string,
+		state: ParserState
+	) -> ParserState {
+		def nextState = parser(state);
+
+		match (nextState) {
+			Result(target_, index_, result) => return nextState;
+			Error(target_, index, result_, error) => return PCUtils.parserError(nextState, fn(error, index));
+		}
+	}
+
+	def errorMap(fn: (string, int) -> string) -> Parser {
+		return Parser.new(errorMapImpl(parser, fn, _));
+	}
+
+	def chainImpl(
+		parser: ParserState -> ParserState,
+		fn: ParseResult -> Parser,
+		state: ParserState
+	) -> ParserState {
+		def nextState = parser(state);
+
+		match (nextState) {
+			Result(target_, index_, result) => {
+				def nextParser = fn(result);
+				return nextParser.parser(nextState);
+			}
+			Error => return nextState;
+		}
+	}
+
+	def chain(fn: ParseResult -> Parser) -> Parser {
+		return Parser.new(chainImpl(parser, fn, _));
+	}
+}
+
+component PC {
+	def strImpl(s: string, state: ParserState) -> ParserState {
+		match (state) {
+			Result(target, index, result_) => {
+				if (target.length - index <= 0) {
+					return PCUtils.parserError(
+						state,
+						Strings.format1("tried to match \"%s\", but got unexpected end of input", s)
+					);
+				}
+				if (PCUtils.stringStartsWith(target, s, index)) {
+					return PCUtils.parserState(state, index + s.length, ParseResult.Single(s));
+				} else {
+					return PCUtils.parserError(
+						state,
+						Strings.format2(
+							"str: Tried to match \"%s\", but got \"%s\"",
+							s,
+							PCUtils.arraySlice(target, index, index + 10)
+						)
+					);
+				}
+			}
+			Error => return state;
+		}
+	}
+	def str(s: string) -> Parser {
+		return Parser.new(strImpl(s, _));
+	}
+
+	def charInRangeImpl(lower: int, upper: int, state: ParserState) -> ParserState {
+		match (state) {
+			Result(target, index, result_) => {
+				if (target.length - index <= 0) {
+					return PCUtils.parserError(
+						state,
+						"tried to match char, but got unexpected end of input"
+					);
+				}
+				def character = target[index];
+				if (character < lower || character > upper) {
+					return PCUtils.parserError(
+						state,
+						Strings.format2("tried to match char but, got character out of bounds of %d-%d", lower, upper)
+					);
+				}
+				return PCUtils.parserState(state, index + 1, ParseResult.Single([character]));
+			}
+			Error => return state;
+		}
+	}
+
+	def charInRange(lower: int, upper: int) -> Parser {
+		return Parser.new(charInRangeImpl(lower, upper, _));
+	}
+
+	def digitsImpl(state: ParserState) -> ParserState {
+		match (state) {
+			Result(target, index, result_) => {
+				def result = PCUtils.takeDigits(target, index);
+				if (result.length == 0) {
+					return PCUtils.parserError(
+						state,
+						Strings.format1(
+							"digits: Tried to match digits, but got \"%s\"",
+							PCUtils.arraySlice(target, index, index + 10)
+						)
+					);
+				} else {
+					return PCUtils.parserState(state, index + result.length, ParseResult.Single(result));
+				}
+			}
+			Error => return state;
+		}
+	}
+
+	def digits = Parser.new(digitsImpl);
+
+	def sequenceOfImpl(parsers: Array<Parser>, state: ParserState) -> ParserState {
+		match (state) {
+			Result => {
+				def results = Array<ParseResult>.new(parsers.length);
+				var nextState = state;
+				for (i < parsers.length) {
+					nextState = parsers[i].parser(nextState);
+					match (nextState) {
+						Result(target_, index_, result) => results[i] = result;
+						Error(target, index, result, error) => {
+							break;
+						}
+					}
+				}
+				return PCUtils.updateParserResult(nextState, ParseResult.Many(results));
+			}
+			Error => return state;
+		}
+	}
+	def sequenceOf(parsers: Array<Parser>) -> Parser {
+		return Parser.new(sequenceOfImpl(parsers, _));
+	}
+
+	def choiceImpl(parsers: Array<Parser>, state: ParserState) -> ParserState {
+		match (state) {
+			Result(target_, index, result_) => {
+				for (i < parsers.length) {
+					def nextState = parsers[i].parser(state);
+					match (nextState) {
+						Result(target_, index_, result) => {
+							return PCUtils.updateParserResult(nextState, result);
+						}
+						Error => {}
+					}
+				}
+				return PCUtils.parserError(
+					state,
+					Strings.format1("choice: Unable to match with any parser at index %d", index)
+				);
+			}
+			Error => return state;
+		}
+	}
+	def choice(parsers: Array<Parser>) -> Parser {
+		return Parser.new(choiceImpl(parsers, _));
+	}
+
+	def emptyParser(state: ParserState) -> ParserState {
+		match (state) {
+			Result => return PCUtils.updateParserResult(state, ParseResult.Empty);
+			Error => return state;
+		}
+	}
+
+	def optional(parser: Parser) -> Parser {
+		return choice([parser, Parser.new(emptyParser)]);
+	}
+
+	def manyImpl(parser: Parser, minimum_results: int, state: ParserState) -> ParserState {
+		match (state) {
+			Result(target_, index, result_) => {
+				def results = Vector<ParseResult>.new();
+				var nextState = state;
+				var done = false;
+				while (!done) {
+					def testState = parser.parser(nextState);
+					match (testState) {
+						Result(target_, index_, result) => {
+							results.put(result);
+							nextState = testState;
+						}
+						Error => {
+							done = true;
+						}
+					}
+				}
+				if (results.length < minimum_results) {
+					return PCUtils.parserError(
+						state,
+						Strings.format2("many%d: Unable to match any parser @ index %d", minimum_results, index));
+				}
+				return PCUtils.updateParserResult(nextState, ParseResult.Many(results.extract()));
+			}
+			Error => return state;
+		}
+	}
+	def many(parser: Parser) -> Parser {
+		return Parser.new(manyImpl(parser, 0, _));
+	}
+
+	def many1(parser: Parser) -> Parser {
+		return Parser.new(manyImpl(parser, 1, _));
+	}
+
+	def sepByImpl(separatorParser: Parser, valueParser: Parser, minimum_results: int, state: ParserState) -> ParserState {
+		match (state) {
+			Result(target_, index, result_) => {
+				def results = Vector<ParseResult>.new();
+				var nextState = state;
+				while (true) {
+					def testState = valueParser.parser(nextState);
+					match (testState) {
+						Result(target_, index_, result) => {
+							results.put(result);
+							nextState = testState;
+							def sepState = separatorParser.parser(nextState);
+							match (sepState) {
+								Result => nextState = sepState;
+								Error => break;
+							}
+						}
+						Error => {
+							break;
+						}
+					}
+				}
+				if (results.length < minimum_results) {
+					return PCUtils.parserError(
+						state,
+						Strings.format2("sepBy%d: Unable to match any parser @ index %d", minimum_results, index));
+				}
+				return PCUtils.updateParserResult(nextState, ParseResult.Many(results.extract()));
+			}
+			Error => return state;
+		}
+	}
+
+
+	def sepBy(separatorParser: Parser, valueParser: Parser) -> Parser {
+		return Parser.new(sepByImpl(separatorParser, valueParser, 0, _));
+	}
+
+	def sepBy1(separatorParser: Parser, valueParser: Parser) -> Parser {
+		return Parser.new(sepByImpl(separatorParser, valueParser, 1, _));
+	}
+
+	def between(leftParser: Parser, contentParser: Parser, rightParser: Parser) -> Parser {
+		return sequenceOf([leftParser, contentParser, rightParser]).map(takeSecondParseResult);
+	}
+
+	def lazyImpl(parserThunk: void -> Parser, state: ParserState) -> ParserState {
+		def parser = parserThunk();
+		return parser.parser(state);
+	}
+
+	def lazy(parserThunk: void -> Parser) -> Parser {
+		return Parser.new(lazyImpl(parserThunk, _));
+	}
+
+	def takeSecondParseResult(parse_result: ParseResult) -> ParseResult {
+		match (parse_result) {
+			Many(results) => return results[1];
+			_ => return parse_result;
+		}
+	}
+}

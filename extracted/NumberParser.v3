@@ -1,0 +1,425 @@
+// Copyright 2014 Google Inc. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Code modified slightly for use outside of aeneas.
+
+def U31_MAX_1: u32 = 0x80000000;
+def U63_MAX_1: u64 = 0x8000000000000000;
+def U32_CHAR_ZERO: u32 = '0';
+def U32_MAX_DIV_10: u32 = 429496729;
+def U32_MAX_MOD_10: u32 = 6;
+def U64_MAX_DIV_10: u64 = 0x1999999999999999; // (18,446,744,073,709,551,616 / 10)
+def U64_MAX_MOD_10: u32 = 6; // (18,446,744,073,709,551,616 % 10)
+
+enum NumberType {
+	U32
+	I32
+	U64
+	I64
+	FLOAT32
+	FLOAT64
+}
+
+class NumberParser(input: Array<byte>, start: int) {
+	var pos = start;
+	var curByte: byte;
+	var width: byte;
+	var is_negative: bool;
+	var is_float: bool;
+	var is_hex: bool;
+	var is_binary: bool;
+	var is_octal: bool;
+	var u_suffix: bool;
+	var l_suffix: bool;
+	var f_suffix: bool;
+	var d_suffix: bool;
+	var error_msg: string;
+	var error_pos: int;
+	var ignore_underscore: bool;
+	var vtype: NumberType;
+	var val: Val;
+	new() {
+		if (start < input.length) curByte = input[start];
+	}
+	def parse() -> bool {
+		vtype = NumberType.I32;
+		if (curByte == '-') {
+			next();
+			is_negative = true;
+		}
+		if (curByte == '0') {
+			match (next()) {
+				'x', 'X' => {
+					next();
+					is_hex = true;
+					return parseHex();
+				}
+				'.' => {
+					next();
+					return parseFractional(pos-2, pos-1);
+				}
+				'e', 'E' => {
+					next();
+					return parseExponent(pos-2, pos-1, 0, 0);
+				}
+				'b', 'B' => {
+					next();
+					is_binary = true;
+					return parseBin();
+				}
+				'0', '1', '2', '3', '4', '5', '6', '7' => {
+					is_octal = true;
+					return parseOct();
+				}
+				'8', '9' => return error("octal digit");
+			} else {
+				if (acceptFD()) {
+					return finishFloat(pos-2, pos-1, 0, 0, false, 0, 0);
+				}
+				if (is_negative) {
+					is_float = true;
+					vtype = NumberType.FLOAT64;
+					return finishFloat(pos-2, pos-1, 0, 0, false, 0, 0);
+				}
+				acceptUL();
+				val = if(l_suffix, Box<long>.new(0L), Box<int>.new(0));
+				return true;
+			}
+		}
+		return parseDec();
+	}
+	def parseDec() -> bool {
+		var s = pos;
+		if (!Char.isDecimal(curByte)) return error("decimal digit");
+		var count = 1;
+		for (ch = next(); ch != 0; ch = next()) {
+			if (Char.isDecimal(ch)) count++;
+			else if (ch == '_') ;
+			else break;
+		}
+		var end = pos;
+		match (curByte) {
+			'.' => { next(); return parseFractional(s, end); }
+			'e', 'E' => { next(); return parseExponent(s, end, 0, 0); }
+		}
+		if (acceptFD()) return finishFloat(s, end, 0, 0, false, 0, 0);
+		acceptUL();
+		if (l_suffix || count > 10) val = evalDecLong(s, end);
+		else val = evalDecInt(s, end);
+		return error_msg == null;
+	}
+	def parseHex() -> bool {
+		var s = pos;
+		if (!Char.isHex(curByte)) return error("hexadecimal digit");
+		var count = 1;
+		for (ch = next(); ch != 0; ch = next()) {
+			if (Char.isHex(ch)) count++;
+			else if (ch == '_') ;
+			else break;
+		}
+		var end = pos;
+		width = byte.!(count);
+		if (count > 16) return error("hexadecimal too large");
+		acceptUL();
+		if (l_suffix || count > 8) val = evalHex16(s, end);
+		else val = evalHex8(s, end);
+		return true;
+	}
+	def parseBin() -> bool {
+		var s = pos;
+		if (!Char.isBinary(curByte)) return error("binary digit");
+		var count = 1;
+		for (ch = next(); ch != 0; ch = next()) {
+			if (Char.isBinary(ch)) count++;
+			else if (ch == '_') ;
+			else break;
+		}
+		var end = pos;
+		width = byte.!(count);
+		if (count > 64) return error("binary too large");
+		acceptUL();
+		if (l_suffix || count > 32) val = evalBin64(s, end);
+		else val = evalBin32(s, end);
+		return true;
+	}
+	def parseFractional(wstart: int, wend: int) -> bool {
+		is_float = true;
+		vtype = NumberType.FLOAT64;
+		var fstart = pos;
+		while (Char.isDecimal(curByte) || curByte == '_') next();
+		var fend = pos;
+		match (curByte) {
+			'e', 'E' => { next(); return parseExponent(wstart, wend, fstart, fend); }
+		}
+		acceptFD();
+		return finishFloat(wstart, wend, fstart, fend, false, 0, 0);
+	}
+	def parseExponent(wstart: int, wend: int, fstart: int, fend: int) -> bool {
+		is_float = true;
+		vtype = NumberType.FLOAT64;
+		var negexp = false;
+		if (curByte == '+') next();
+		else if (curByte == '-') {
+			negexp = true;
+			next();
+		}
+		var estart = pos;
+		match (curByte) {
+			'0' => next();
+			'1', '2', '3', '4', '5', '6', '7', '8', '9' => while(Char.isDecimal(next()));
+			_ => {
+				error("expected decimal exponent");
+				return false;
+			}
+		}
+		var eend = pos;
+		acceptFD();
+		return finishFloat(wstart, wend, fstart, fend, negexp, estart, eend);
+	}
+	def acceptUL() -> bool {
+		match (curByte) {
+			'u', 'U' => {
+				if (is_negative) error("negative unsigned literal");
+				vtype = NumberType.U32;
+				u_suffix = true;
+				var c = next();
+				if (c == 'l' || c == 'L') {
+					next();
+					vtype = NumberType.U64;
+					return l_suffix = true;
+				}
+				return true;
+			}
+			'l', 'L' => {
+				next();
+				vtype = NumberType.I64;
+				return l_suffix = true;
+			}
+		}
+		return false;
+	}
+	def acceptFD() -> bool {
+		match (curByte) {
+			'f', 'F' => {
+				is_float = true;
+				f_suffix = true;
+				vtype = NumberType.FLOAT32;
+				next();
+				return true;
+			}
+			'd', 'D' => {
+				is_float = true;
+				d_suffix = true;
+				vtype = NumberType.FLOAT64;
+				next();
+				return true;
+			}
+		}
+		return false;
+	}
+	def evalHex8(s: int, end: int) -> Val {
+		var ival: int;
+		while (s < end) {
+			var ch = input[s++];
+			if (ch != '_') ival = (ival << 4) | Char.hexValue(ch);
+		}
+		if (is_negative) ival = 0 - ival;
+		return Box.new(ival);
+	}
+	def evalHex16(s: int, end: int) -> Val {
+		var lval: long;
+		while (s < end) {
+			var ch = input[s++];
+			if (ch != '_') lval = (lval << 4) | Char.hexValue(ch);
+		}
+		if (is_negative) lval = 0 - lval;
+		return boxLong(lval);
+	}
+	def evalBin32(s: int, end: int) -> Val {
+		var ival: int;
+		while (s < end) {
+			var ch = input[s++];
+			if (ch != '_') ival = (ival << 1) | (ch - '0');
+		}
+		if (is_negative) ival = 0 - ival;
+		return Box.new(ival);
+	}
+	def evalBin64(s: int, end: int) -> Val {
+		var lval: long;
+		while (s < end) {
+			var ch = input[s++];
+			if (ch != '_') lval = (lval << 1) | (ch - '0');
+		}
+		if (is_negative) lval = 0 - lval;
+		return boxLong(lval);
+	}
+	def boxLong(v: long) -> Val {
+		vtype = if(u_suffix, NumberType.U64, NumberType.I64);
+		return Box.new(v);
+	}
+	def evalDecInt(s: int, end: int) -> Val {
+		var ival = input[s++] - U32_CHAR_ZERO;
+		if (end <= s + 8) {
+			// fast case of 9 or fewer digits; cannot overflow
+			while (s < end) {
+				var ch = input[s++];
+				if (ch != '_') ival = ival * 10 + (ch - U32_CHAR_ZERO);
+			}
+		} else {
+			// 10 digits => could overflow
+			var max = end - 1;
+			while (s < max) {
+				var ch = input[s++];
+				if (ch != '_') ival = ival * 10 + (ch - U32_CHAR_ZERO);
+			}
+			// check last digit for potential overflow
+			var ch = input[s];
+			if (ch != '_') {
+				var d = ch - U32_CHAR_ZERO;
+				if (ival >= U32_MAX_DIV_10) {
+					if (ival > U32_MAX_DIV_10) return evalDecLong(s-9, end);
+					if (d >= U32_MAX_MOD_10) return evalDecLong(s-9, end);
+				}
+				ival = ival * 10 + d;
+			}
+		}
+		if (is_negative) {
+			// negate result if necessary; may overflow to long
+			if (ival <= U31_MAX_1) return Box.new(0 - int.view(ival));
+			else return boxLong(0 - long.view(ival));
+		}
+		if (!u_suffix && ival >= U31_MAX_1) {
+			// overflow to long if a large positive number
+			return boxLong(long.view(ival));
+		}
+		return Box.new(int.view(ival));
+	}
+	def evalDecLong(s: int, end: int) -> Val {
+		var lval = u64.view(input[s++] - U32_CHAR_ZERO);
+		if (end <= s + 18) {
+			// fast case of 19 or fewer digits; cannot overflow
+			while (s < end) {
+				var ch = input[s++];
+				if (ch != '_') lval = lval * 10 + (ch - U32_CHAR_ZERO);
+			}
+		} else {
+			// 20 digits => could overflow
+			var max = end - 1;
+			while (s < max) {
+				var ch = input[s++];
+				if (ch != '_') lval = lval * 10 + (ch - U32_CHAR_ZERO);
+			}
+			// check last digit for potential overflow
+			var ch = input[s];
+			if (ch != '_') {
+				var d = ch - U32_CHAR_ZERO;
+				if (lval >= U64_MAX_DIV_10) {
+					if (lval > U64_MAX_DIV_10) return overflowDecimal();
+					if (d >= U64_MAX_MOD_10) return overflowDecimal();
+				}
+				lval = lval * 10 + d;
+			}
+		}
+		if (is_negative) {
+			// negate result if necessary; may overflow
+			if (lval > U63_MAX_1) return overflowDecimal();
+			return boxLong(0 - long.view(lval));
+		} else if (!u_suffix) {
+			// check overflow of positive long
+			if (lval >= U63_MAX_1) return overflowDecimal();
+		}
+		return boxLong(long.view(lval));
+	}
+	def finishFloat(wstart: int, wend: int, fstart: int, fend: int,
+		negexp: bool, estart: int, eend: int) -> bool {
+		val = evalFloat(wstart, wend, fstart, fend, negexp, estart, eend);
+		return true;
+	}
+	def evalFloat(wstart: int, wend: int, fstart: int, fend: int,
+		negexp: bool, estart: int, eend: int) -> Val {
+		// compute the exponent
+		var exp = 0;
+		for (i = estart; i < eend; i++) {
+			exp = exp * 10 + input[i] - '0';
+			if (exp > 1000000) return if(negexp, evalUnderflowExponent(), evalOverflowExponent());
+		}
+		if (negexp) exp = 0 - exp;
+		// add digits from whole part
+		var bi = FpSketch.new();
+		for (i = wstart; i < wend; i++) {
+			var ch = input[i];
+			if (ch != '_') bi.addDecDigit(ch - '0');
+		}
+		// add digits from fractional part
+		for (i = fstart; i < fend; i++) {
+			var ch = input[i];
+			if (ch != '_') {
+				bi.addDecDigit(ch - '0');
+				exp--;
+			}
+		}
+
+		if (exp > 380) return evalOverflowExponent();
+		if (exp < -380) return evalUnderflowExponent();
+
+		var guard = false;;
+		if (exp > 0) {
+			// multiply the number by the base-10 exponent
+			bi.mulPow10(u32.view(exp));
+		} else if (exp < 0) {
+			// divide the number by the base-10 exponent, careful
+			// to generate at least 3 words of quotient
+			// (minimum 65 bits precision).
+			guard = !bi.divPow10(u32.view(0 - exp), 3);
+		}
+		// round and construct final floating point number
+		var sign = if(is_negative, 1, 0);
+		if (vtype == NumberType.FLOAT32) {
+			bi.roundg(1 + Float.FLOAT32_FRACTION_WIDTH, guard);
+			var m = bi.mantissa32();
+			return Float.f32(sign, m.1, m.0);
+		} else {
+			bi.roundg(1 + Float.FLOAT64_FRACTION_WIDTH, guard);
+			var m = bi.mantissa64();
+			return Float.f64(sign, m.1, m.0);
+		}
+	}
+	def evalUnderflowExponent() -> Val {
+		if (is_negative) {
+			return if(vtype == NumberType.FLOAT32, Float.F32_MINUS_ZERO, Float.F64_MINUS_ZERO);
+		} else {
+			return if(vtype == NumberType.FLOAT32, Float.F32_ZERO, Float.F64_ZERO);
+		}
+	}
+	def evalOverflowExponent() -> Val {
+		if (is_negative) {
+			return if(vtype == NumberType.FLOAT32, Float.F32_MINUS_INFINITY, Float.F64_MINUS_INFINITY);
+		} else {
+			return if(vtype == NumberType.FLOAT32, Float.F32_INFINITY, Float.F64_INFINITY);
+		}
+	}
+	def overflowDecimal() -> Val {
+		error("decimal too large");
+		return null;
+	}
+	def parseOct() -> bool {
+		error("invalid octal literal");
+		while (Char.isOctal(curByte)) next();
+		return false;
+	}
+	def next() -> byte {
+		if (pos < (input.length - 1)) return curByte = input[++pos];
+		pos = input.length;
+		return curByte = '\x00';
+	}
+	def error(msg: string) -> bool {
+		if (error_msg == null) {
+			error_msg = msg;
+			error_pos = pos;
+		}
+		return false;
+	}
+	def hasSuffix() -> bool {
+		return u_suffix || l_suffix;
+	}
+}
