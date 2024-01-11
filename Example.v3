@@ -1,0 +1,44 @@
+def main() {
+	// Expected to return error when parsing
+	// def jsonString = "[{\"a\": -193.4e+3, \"b\": [true]}]";
+	// Should work, but throws typecheck exception if parsed as float
+	def jsonString = "[{\"a\": -193.4, \"b\": 145}]";
+	match (Json.valueParser.run(jsonString)) {
+		Result(target, index_, result) => {
+			def json = Json.parseValueResultToJsonValue(result);
+			def deserializer = Json.deArray(
+				Json.deObject2(
+					JsonObjectDeserializedExample.new,
+					("a", Json.deFloat32),
+					("b", Json.deInt32)
+				)
+			);
+
+			def arr = deserializer(json);
+
+			System.puts("parsing success:\n");
+			System.puts(json.toString());
+			System.puts("\n");
+
+			match (arr) {
+				Ok(arr) => {
+					System.puti(arr[0].b);
+				}
+				Err(err) => {
+					System.puts(Strings.format1("Failed to deserialize: %s\n", err));
+				}
+			}
+		}
+		Error(target_, index_, result_, error) => {
+			System.puts("error: ");
+			System.puts(error);
+			System.puts("\n");
+		}
+	}
+}
+
+class JsonObjectDeserializedExample {
+	def a: float;
+	def b: int;
+	new(a, b) {}
+}
