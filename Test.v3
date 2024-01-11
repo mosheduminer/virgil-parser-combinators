@@ -6,8 +6,7 @@ def T = UnitTests.register;
 def X = [
 	T("parsing", test_parsing),
 	T("deserializing", test_deserializing),
-	T("fail_deserializing", test_fail_deserializing),
-	()
+	T("fail_deserializing", test_fail_deserializing)
 ];
 
 // Tests

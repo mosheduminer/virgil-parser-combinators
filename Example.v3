@@ -9,7 +9,7 @@ def main() {
 			def deserializer = Json.deArray(
 				Json.deObject2(
 					JsonObjectDeserializedExample.new,
-					("a", Json.deFloat32),
+					("a", Json.deFloat64),
 					("b", Json.deInt32)
 				)
 			);
@@ -38,7 +38,7 @@ def main() {
 }
 
 class JsonObjectDeserializedExample {
-	def a: float;
+	def a: double;
 	def b: int;
 	new(a, b) {}
 }

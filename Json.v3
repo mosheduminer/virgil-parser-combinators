@@ -40,14 +40,14 @@ type JsonValue {
 		def f32() -> Result<float, string> {
 			def np = NumberParser.new(v, 0);
 			if (np.parse()) {
-				return Result.Ok(float.!(Float32Val.!(np.val).bits));
+				return Result.Ok(float.view(u32.view(Float64Val.!(np.val).bits)));
 			}
 			return Result.Err(np.error_msg);
 		}
 		def f64() -> Result<double, string> {
 			def np = NumberParser.new(v, 0);
 			if (np.parse()) {
-				return Result.Ok(double.!(Float64Val.!(np.val).bits));
+				return Result.Ok(double.view(Float64Val.!(np.val).bits));
 			}
 			return Result.Err(np.error_msg);
 		}
